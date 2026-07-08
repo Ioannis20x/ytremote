@@ -1,0 +1,15 @@
+{
+  "name": "ytremote-server",
+  "version": "1.0.0",
+  "description": "YTRemote WebSocket Relay Server",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "dotenv": "^16.4.0"
+  }
+}

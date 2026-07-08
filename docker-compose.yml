@@ -1,0 +1,13 @@
+services:
+  ytremote:
+    build: .
+    container_name: ytremote
+    restart: unless-stopped
+    ports:
+      - "3456:3456"
+    environment:
+      - PORT=3456
+      - PAIRING_CODE=${PAIRING_CODE:-change-me}
+    # Optional: hinter Caddy/nginx mit HTTPS für wss://
+    # networks:
+    #   - caddy_network
