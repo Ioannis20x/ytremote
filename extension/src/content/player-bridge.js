@@ -158,12 +158,128 @@
   }
 
   /**
+   * Homepage-Shelves auslesen (Mein Mix, Empfehlungen, etc.)
+   * Scraped die Karussells auf der YT Music Startseite.
+   */
+  function getHomeShelves() {
+    const shelves = [];
+
+    try {
+      // YT Music Startseiten-Karussells
+      const shelfElements = document.querySelectorAll('ytmusic-carousel-shelf-renderer');
+
+      for (const shelf of shelfElements) {
+        // Shelf-Titel (z.B. "Schnelleinstieg", "Mein Supermix", etc.)
+        const headerEl = shelf.querySelector('.header .title, #header .title, h2');
+        const shelfTitle = headerEl?.textContent?.trim() || '';
+
+        if (!shelfTitle) continue;
+
+        const items = [];
+        // Items im Karussell (können Playlists, Alben, Songs sein)
+        const itemElements = shelf.querySelectorAll(
+          'ytmusic-responsive-list-item-renderer, ytmusic-two-row-item-renderer'
+        );
+
+        for (const item of itemElements) {
+          // Titel
+          const titleEl = item.querySelector(
+            '.title a, .title yt-formatted-string, .title, .primary-flex-columns .title'
+          );
+          // Subtitle (Artist, Beschreibung)
+          const subtitleEl = item.querySelector(
+            '.subtitle, .secondary-flex-columns .flex-column yt-formatted-string, .subtitle yt-formatted-string'
+          );
+          // Thumbnail
+          const thumbEl = item.querySelector('img');
+          // Link/Navigation
+          const linkEl = item.querySelector('a[href]')
+            || titleEl?.closest('a[href]')
+            || item.querySelector('[href]');
+
+          const title = titleEl?.textContent?.trim() || '';
+          const subtitle = subtitleEl?.textContent?.trim() || '';
+          const thumbnail = thumbEl?.src || '';
+          let url = linkEl?.getAttribute('href') || '';
+
+          // Relative URLs ergänzen
+          if (url && !url.startsWith('http')) {
+            url = `https://music.youtube.com${url}`;
+          }
+
+          if (title && url) {
+            items.push({ title, subtitle, thumbnail, url });
+          }
+        }
+
+        if (items.length > 0) {
+          shelves.push({ title: shelfTitle, items });
+        }
+      }
+    } catch (err) {
+      console.error('[YTRemote] Fehler beim Scrapen der Homepage:', err);
+    }
+
+    return shelves;
+  }
+
+  /**
+   * Aktuelle Queue/Warteschlange auslesen
+   */
+  function getQueue() {
+    const queue = [];
+
+    try {
+      const queueItems = document.querySelectorAll('ytmusic-player-queue-item');
+
+      for (const item of queueItems) {
+        const titleEl = item.querySelector('.song-title');
+        const artistEl = item.querySelector('.byline');
+        const thumbEl = item.querySelector('img');
+        const selected = item.getAttribute('selected') !== null;
+
+        queue.push({
+          title: titleEl?.textContent?.trim() || 'Unbekannt',
+          artist: artistEl?.textContent?.trim() || '',
+          thumbnail: thumbEl?.src || '',
+          isPlaying: selected,
+        });
+      }
+    } catch (err) {
+      console.error('[YTRemote] Fehler beim Auslesen der Queue:', err);
+    }
+
+    return queue;
+  }
+
+  /**
    * Nachrichten vom Background Service Worker empfangen
    */
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'GET_STATE') {
       sendResponse(getPlayerState());
       return false; // synchrone Antwort
+    }
+
+    if (message.type === 'BROWSE') {
+      // Homepage muss offen sein – falls nicht, erst navigieren
+      if (window.location.pathname !== '/') {
+        // Merken dass wir Daten wollen, dann navigieren
+        sendResponse({ shelves: [], needsNavigate: true });
+      } else {
+        // Wir sind auf der Homepage – Shelves auslesen
+        // Kurz warten damit alles geladen ist
+        setTimeout(() => {
+          sendResponse({ shelves: getHomeShelves(), needsNavigate: false });
+        }, 500);
+        return true; // asynchrone Antwort
+      }
+      return false;
+    }
+
+    if (message.type === 'GET_QUEUE') {
+      sendResponse({ queue: getQueue() });
+      return false;
     }
 
     if (message.type === 'ACTION') {

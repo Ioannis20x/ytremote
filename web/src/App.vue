@@ -5,7 +5,7 @@ import { searchSongs } from './innertube.js';
 // === Zustand ===
 const connected = ref(false);
 const showSetup = ref(true);
-const activeTab = ref('player'); // 'player' oder 'search'
+const activeTab = ref('player'); // 'player', 'search', 'browse'
 
 const config = reactive({
   serverUrl: localStorage.getItem('ytremote_server') || '',
@@ -30,6 +30,11 @@ const player = reactive({
 const searchQuery = ref('');
 const searchResults = ref([]);
 const isSearching = ref(false);
+
+// Browse (Homepage-Shelves: Mein Mix, Empfehlungen, etc.)
+const browseShelves = ref([]);
+const isBrowsing = ref(false);
+const browseError = ref('');
 
 let ws = null;
 let reconnectTimer = null;
@@ -78,6 +83,16 @@ function connect() {
         if (msg.type === 'AUTH_FAIL') {
           player.error = 'Pairing-Code ungültig';
         }
+        // Browse-Ergebnisse von der Extension
+        if (msg.type === 'BROWSE_RESULT') {
+          isBrowsing.value = false;
+          if (msg.error) {
+            browseError.value = msg.error;
+          } else {
+            browseShelves.value = msg.shelves || [];
+            browseError.value = '';
+          }
+        }
       } catch {}
     };
 
@@ -109,17 +124,39 @@ function sendCommand(action, payload = {}) {
   }
 }
 
-// === Song abspielen (von Suchergebnis) ===
+function sendMessage(type) {
+  if (ws?.readyState === 1) {
+    ws.send(JSON.stringify({ type }));
+  }
+}
+
+// === Song abspielen ===
 function playSong(song) {
   sendCommand('playUrl', { url: song.url, videoId: song.videoId });
-  // Sofort lokale UI aktualisieren
   player.title = song.title;
   player.artist = song.artist;
   player.thumbnail = song.thumbnail;
   player.isPlaying = true;
   player.active = true;
-  // Zurück zum Player wechseln
   activeTab.value = 'player';
+}
+
+// === Playlist/Mix abspielen ===
+function playItem(item) {
+  sendCommand('playUrl', { url: item.url });
+  player.active = true;
+  player.isPlaying = true;
+  if (item.title) player.title = item.title;
+  if (item.subtitle) player.artist = item.subtitle;
+  if (item.thumbnail) player.thumbnail = item.thumbnail;
+  activeTab.value = 'player';
+}
+
+// === Browse: Homepage-Daten laden ===
+function loadBrowse() {
+  isBrowsing.value = true;
+  browseError.value = '';
+  sendMessage('BROWSE');
 }
 
 // === Suche ===
@@ -127,17 +164,11 @@ let searchTimeout = null;
 
 async function doSearch() {
   const query = searchQuery.value.trim();
-  if (!query) {
-    searchResults.value = [];
-    return;
-  }
-
+  if (!query) { searchResults.value = []; return; }
   isSearching.value = true;
   try {
-    const results = await searchSongs(query);
-    searchResults.value = results;
-  } catch (err) {
-    console.error('Suchfehler:', err);
+    searchResults.value = await searchSongs(query);
+  } catch {
     searchResults.value = [];
   } finally {
     isSearching.value = false;
@@ -146,14 +177,12 @@ async function doSearch() {
 
 function onSearchInput() {
   clearTimeout(searchTimeout);
-  searchTimeout = setTimeout(doSearch, 400); // Debounce
+  searchTimeout = setTimeout(doSearch, 400);
 }
 
 // === Lifecycle ===
 onMounted(() => {
-  if (config.serverUrl && config.pairingCode) {
-    connect();
-  }
+  if (config.serverUrl && config.pairingCode) connect();
 });
 
 onUnmounted(() => {
@@ -169,31 +198,17 @@ onUnmounted(() => {
     <div v-if="showSetup" class="setup">
       <h1>🎵 YTRemote</h1>
       <p class="subtitle">Steuere YouTube Music von deinem Handy</p>
-
       <div class="form">
         <label>Server URL</label>
-        <input
-          v-model="config.serverUrl"
-          type="url"
-          placeholder="wss://ytremote.example.com"
-          @keyup.enter="connect"
-        />
-
+        <input v-model="config.serverUrl" type="url" placeholder="wss://ytremote.example.com" @keyup.enter="connect" />
         <label>Pairing-Code</label>
-        <input
-          v-model="config.pairingCode"
-          type="text"
-          placeholder="Dein geheimer Code"
-          @keyup.enter="connect"
-        />
-
+        <input v-model="config.pairingCode" type="text" placeholder="Dein geheimer Code" @keyup.enter="connect" />
         <button @click="connect" class="btn-primary">Verbinden</button>
       </div>
     </div>
 
     <!-- Remote-Control -->
     <div v-else class="remote">
-      <!-- Header -->
       <header>
         <div class="connection-status">
           <span class="dot" :class="{ online: connected }"></span>
@@ -204,39 +219,28 @@ onUnmounted(() => {
 
       <!-- Tab-Navigation -->
       <nav class="tabs">
-        <button
-          class="tab"
-          :class="{ active: activeTab === 'player' }"
-          @click="activeTab = 'player'"
-        >Player</button>
-        <button
-          class="tab"
-          :class="{ active: activeTab === 'search' }"
-          @click="activeTab = 'search'"
-        >Suche</button>
+        <button class="tab" :class="{ active: activeTab === 'player' }" @click="activeTab = 'player'">Player</button>
+        <button class="tab" :class="{ active: activeTab === 'search' }" @click="activeTab = 'search'">Suche</button>
+        <button class="tab" :class="{ active: activeTab === 'browse' }" @click="activeTab = 'browse'; loadBrowse()">Bibliothek</button>
       </nav>
 
       <!-- ===== PLAYER TAB ===== -->
       <div v-if="activeTab === 'player'" class="tab-content">
-        <!-- Kein Song aktiv -->
         <div v-if="!player.active" class="empty-state">
           <div class="empty-icon">🎵</div>
           <p>{{ player.error || 'Öffne YouTube Music in deinem Browser' }}</p>
           <button class="btn-secondary" @click="activeTab = 'search'">Song suchen</button>
         </div>
 
-        <!-- Player -->
         <div v-else class="player-view">
           <div class="artwork">
             <img v-if="player.thumbnail" :src="player.thumbnail" :alt="player.title" />
             <div v-else class="artwork-placeholder">🎵</div>
           </div>
-
           <div class="track-info">
             <div class="track-title">{{ player.title }}</div>
             <div class="track-artist">{{ player.artist }}</div>
           </div>
-
           <div class="progress-section">
             <div class="progress-bar">
               <div class="progress-fill" :style="{ width: progress + '%' }"></div>
@@ -246,34 +250,16 @@ onUnmounted(() => {
               <span>{{ formatTime(player.duration) }}</span>
             </div>
           </div>
-
           <div class="controls">
-            <button
-              class="btn-control small"
-              :class="{ active: player.shuffle }"
-              @click="sendCommand('shuffle')"
-            >🔀</button>
+            <button class="btn-control small" :class="{ active: player.shuffle }" @click="sendCommand('shuffle')">🔀</button>
             <button class="btn-control" @click="sendCommand('previous')">⏮</button>
-            <button class="btn-control play" @click="sendCommand('playPause')">
-              {{ player.isPlaying ? '⏸' : '▶' }}
-            </button>
+            <button class="btn-control play" @click="sendCommand('playPause')">{{ player.isPlaying ? '⏸' : '▶' }}</button>
             <button class="btn-control" @click="sendCommand('next')">⏭</button>
-            <button
-              class="btn-control small"
-              @click="sendCommand('repeat')"
-            >🔁</button>
+            <button class="btn-control small" @click="sendCommand('repeat')">🔁</button>
           </div>
-
           <div class="volume-section">
             <span class="volume-icon">🔊</span>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              :value="player.volume"
-              @change="sendCommand('setVolume', { volume: parseInt($event.target.value) })"
-              class="volume-slider"
-            />
+            <input type="range" min="0" max="100" :value="player.volume" @change="sendCommand('setVolume', { volume: parseInt($event.target.value) })" class="volume-slider" />
           </div>
         </div>
       </div>
@@ -282,39 +268,13 @@ onUnmounted(() => {
       <div v-if="activeTab === 'search'" class="tab-content">
         <div class="search-section">
           <div class="search-bar">
-            <input
-              v-model="searchQuery"
-              type="search"
-              placeholder="Song, Artist oder Album suchen..."
-              @input="onSearchInput"
-              @keyup.enter="doSearch"
-              autofocus
-            />
-            <button class="search-btn" @click="doSearch" :disabled="isSearching">
-              {{ isSearching ? '...' : '🔍' }}
-            </button>
+            <input v-model="searchQuery" type="search" placeholder="Song, Artist oder Album suchen..." @input="onSearchInput" @keyup.enter="doSearch" autofocus />
+            <button class="search-btn" @click="doSearch" :disabled="isSearching">{{ isSearching ? '...' : '🔍' }}</button>
           </div>
-
-          <!-- Ladeindikator -->
-          <div v-if="isSearching" class="search-loading">
-            <div class="spinner"></div>
-            <span>Suche auf YouTube Music...</span>
-          </div>
-
-          <!-- Ergebnisse -->
+          <div v-if="isSearching" class="search-loading"><div class="spinner"></div><span>Suche auf YouTube Music...</span></div>
           <div v-else-if="searchResults.length > 0" class="search-results">
-            <div
-              v-for="song in searchResults"
-              :key="song.videoId"
-              class="search-item"
-              @click="playSong(song)"
-            >
-              <img
-                v-if="song.thumbnail"
-                :src="song.thumbnail"
-                class="search-thumb"
-                alt=""
-              />
+            <div v-for="song in searchResults" :key="song.videoId" class="search-item" @click="playSong(song)">
+              <img v-if="song.thumbnail" :src="song.thumbnail" class="search-thumb" alt="" />
               <div v-else class="search-thumb-placeholder">🎵</div>
               <div class="search-item-info">
                 <div class="search-item-title">{{ song.title }}</div>
@@ -323,10 +283,50 @@ onUnmounted(() => {
               <button class="play-btn" @click.stop="playSong(song)">▶</button>
             </div>
           </div>
-
-          <!-- Keine Ergebnisse -->
           <div v-else-if="searchQuery && !isSearching" class="empty-state small">
-            <p>Suche nach Songs, die auf deinem PC abgespielt werden sollen</p>
+            <p>Suche nach Songs, die auf deinem PC abgespielt werden</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== BIBLIOTHEK-TAB ===== -->
+      <div v-if="activeTab === 'browse'" class="tab-content">
+        <div class="browse-section">
+          <!-- Laden -->
+          <div v-if="isBrowsing" class="search-loading">
+            <div class="spinner"></div>
+            <span>Lade deine Empfehlungen...</span>
+          </div>
+
+          <!-- Fehler -->
+          <div v-else-if="browseError" class="empty-state small">
+            <p>{{ browseError }}</p>
+            <button class="btn-secondary" @click="loadBrowse()">Erneut versuchen</button>
+          </div>
+
+          <!-- Keine Daten -->
+          <div v-else-if="browseShelves.length === 0 && !isBrowsing" class="empty-state small">
+            <div class="empty-icon">📚</div>
+            <p>Öffne YouTube Music im Browser und geh zur Startseite, damit deine Mixes und Empfehlungen hier erscheinen.</p>
+            <button class="btn-secondary" @click="loadBrowse()">Laden</button>
+          </div>
+
+          <!-- Shelves (Karussells) -->
+          <div v-else class="shelves">
+            <div v-for="(shelf, si) in browseShelves" :key="si" class="shelf">
+              <h3 class="shelf-title">{{ shelf.title }}</h3>
+              <div class="shelf-items">
+                <div v-for="(item, ii) in shelf.items" :key="ii" class="shelf-item" @click="playItem(item)">
+                  <div class="shelf-item-thumb">
+                    <img v-if="item.thumbnail" :src="item.thumbnail" alt="" />
+                    <div v-else class="shelf-item-placeholder">🎵</div>
+                    <div class="shelf-item-play">▶</div>
+                  </div>
+                  <div class="shelf-item-title">{{ item.title }}</div>
+                  <div class="shelf-item-subtitle">{{ item.subtitle }}</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -338,253 +338,98 @@ onUnmounted(() => {
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  background: #1a1a2e;
-  color: #e0e0e0;
+  background: #1a1a2e; color: #e0e0e0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
-  overscroll-behavior: none;
-  user-select: none;
+  overscroll-behavior: none; user-select: none;
 }
+.app { min-height: 100dvh; display: flex; flex-direction: column; }
 
-.app {
-  min-height: 100dvh;
-  display: flex;
-  flex-direction: column;
-}
-
-/* === Setup === */
-.setup {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-
+/* Setup */
+.setup { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; }
 .setup h1 { font-size: 32px; margin-bottom: 8px; }
 .subtitle { color: #888; margin-bottom: 32px; }
-
 .form { width: 100%; max-width: 360px; }
-.form label {
-  display: block; font-size: 13px; color: #aaa;
-  margin-bottom: 4px; margin-top: 16px;
-}
-.form input {
-  width: 100%; padding: 12px 14px;
-  border: 1px solid #333; border-radius: 10px;
-  background: #16213e; color: #e0e0e0;
-  font-size: 15px; outline: none;
-}
+.form label { display: block; font-size: 13px; color: #aaa; margin-bottom: 4px; margin-top: 16px; }
+.form input { width: 100%; padding: 12px 14px; border: 1px solid #333; border-radius: 10px; background: #16213e; color: #e0e0e0; font-size: 15px; outline: none; }
 .form input:focus { border-color: #4ecdc4; }
+.btn-primary { width: 100%; margin-top: 24px; padding: 14px; border: none; border-radius: 10px; background: #4ecdc4; color: #1a1a2e; font-size: 16px; font-weight: 700; cursor: pointer; }
+.btn-secondary { margin-top: 16px; padding: 10px 20px; border: 1px solid #4ecdc4; border-radius: 8px; background: transparent; color: #4ecdc4; font-size: 14px; cursor: pointer; }
 
-.btn-primary {
-  width: 100%; margin-top: 24px; padding: 14px;
-  border: none; border-radius: 10px;
-  background: #4ecdc4; color: #1a1a2e;
-  font-size: 16px; font-weight: 700; cursor: pointer;
-}
-
-.btn-secondary {
-  margin-top: 16px; padding: 10px 20px;
-  border: 1px solid #4ecdc4; border-radius: 8px;
-  background: transparent; color: #4ecdc4;
-  font-size: 14px; cursor: pointer;
-}
-
-/* === Remote === */
-.remote {
-  flex: 1; display: flex; flex-direction: column;
-  padding: 16px; max-width: 480px; margin: 0 auto; width: 100%;
-}
-
-header {
-  display: flex; justify-content: space-between;
-  align-items: center; padding-bottom: 8px;
-}
-
-.connection-status {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 13px; color: #888;
-}
-
-.dot {
-  width: 8px; height: 8px; border-radius: 50%; background: #ff6b6b;
-}
+/* Remote */
+.remote { flex: 1; display: flex; flex-direction: column; padding: 16px; max-width: 480px; margin: 0 auto; width: 100%; }
+header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; }
+.connection-status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #888; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #ff6b6b; }
 .dot.online { background: #4ecdc4; }
+.btn-icon { background: none; border: none; color: #888; font-size: 18px; cursor: pointer; padding: 4px 8px; }
 
-.btn-icon {
-  background: none; border: none; color: #888;
-  font-size: 18px; cursor: pointer; padding: 4px 8px;
-}
-
-/* === Tabs === */
-.tabs {
-  display: flex; gap: 4px; margin-bottom: 16px;
-  background: #16213e; border-radius: 10px; padding: 4px;
-}
-
-.tab {
-  flex: 1; padding: 10px; border: none; border-radius: 8px;
-  background: transparent; color: #888;
-  font-size: 14px; font-weight: 600; cursor: pointer;
-  transition: all 0.2s;
-}
+/* Tabs */
+.tabs { display: flex; gap: 4px; margin-bottom: 16px; background: #16213e; border-radius: 10px; padding: 4px; }
+.tab { flex: 1; padding: 10px; border: none; border-radius: 8px; background: transparent; color: #888; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
 .tab.active { background: #4ecdc4; color: #1a1a2e; }
+.tab-content { flex: 1; display: flex; flex-direction: column; overflow-y: auto; }
 
-.tab-content { flex: 1; display: flex; flex-direction: column; }
-
-/* === Player === */
-.empty-state {
-  flex: 1; display: flex; flex-direction: column;
-  align-items: center; justify-content: center; color: #666;
-}
-.empty-state.small { padding-top: 48px; }
+/* Player */
+.empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #666; text-align: center; padding: 0 16px; }
+.empty-state.small { padding-top: 48px; flex: unset; }
 .empty-icon { font-size: 64px; margin-bottom: 16px; opacity: 0.3; }
-
-.player-view {
-  flex: 1; display: flex; flex-direction: column;
-  align-items: center; padding-top: 8px;
-}
-
-.artwork {
-  width: min(260px, 65vw); aspect-ratio: 1;
-  border-radius: 12px; overflow: hidden;
-  margin-bottom: 20px; background: #16213e;
-}
+.player-view { flex: 1; display: flex; flex-direction: column; align-items: center; padding-top: 8px; }
+.artwork { width: min(260px, 65vw); aspect-ratio: 1; border-radius: 12px; overflow: hidden; margin-bottom: 20px; background: #16213e; }
 .artwork img { width: 100%; height: 100%; object-fit: cover; }
-.artwork-placeholder {
-  width: 100%; height: 100%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 64px; opacity: 0.2;
-}
-
-.track-info {
-  text-align: center; margin-bottom: 16px;
-  padding: 0 16px; width: 100%;
-}
-.track-title {
-  font-size: 18px; font-weight: 700; color: #fff;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
+.artwork-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 64px; opacity: 0.2; }
+.track-info { text-align: center; margin-bottom: 16px; padding: 0 16px; width: 100%; }
+.track-title { font-size: 18px; font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .track-artist { font-size: 14px; color: #aaa; margin-top: 4px; }
-
 .progress-section { width: 100%; padding: 0 8px; margin-bottom: 20px; }
-.progress-bar {
-  width: 100%; height: 4px; background: #333;
-  border-radius: 2px; overflow: hidden;
-}
-.progress-fill {
-  height: 100%; background: #4ecdc4;
-  border-radius: 2px; transition: width 0.3s linear;
-}
-.time-display {
-  display: flex; justify-content: space-between;
-  font-size: 11px; color: #666; margin-top: 4px;
-}
-
-.controls {
-  display: flex; align-items: center;
-  justify-content: center; gap: 16px; margin-bottom: 24px;
-}
-.btn-control {
-  background: none; border: none; color: #e0e0e0;
-  font-size: 28px; cursor: pointer; padding: 8px;
-  border-radius: 50%; transition: background 0.15s; line-height: 1;
-}
+.progress-bar { width: 100%; height: 4px; background: #333; border-radius: 2px; overflow: hidden; }
+.progress-fill { height: 100%; background: #4ecdc4; border-radius: 2px; transition: width 0.3s linear; }
+.time-display { display: flex; justify-content: space-between; font-size: 11px; color: #666; margin-top: 4px; }
+.controls { display: flex; align-items: center; justify-content: center; gap: 16px; margin-bottom: 24px; }
+.btn-control { background: none; border: none; color: #e0e0e0; font-size: 28px; cursor: pointer; padding: 8px; border-radius: 50%; transition: background 0.15s; line-height: 1; }
 .btn-control:active { background: rgba(255, 255, 255, 0.1); }
-.btn-control.play {
-  font-size: 36px; background: #4ecdc4; color: #1a1a2e;
-  width: 68px; height: 68px;
-  display: flex; align-items: center; justify-content: center;
-}
+.btn-control.play { font-size: 36px; background: #4ecdc4; color: #1a1a2e; width: 68px; height: 68px; display: flex; align-items: center; justify-content: center; }
 .btn-control.small { font-size: 20px; color: #888; }
 .btn-control.small.active { color: #4ecdc4; }
-
-.volume-section {
-  width: 100%; display: flex;
-  align-items: center; gap: 12px; padding: 0 8px;
-}
+.volume-section { width: 100%; display: flex; align-items: center; gap: 12px; padding: 0 8px; }
 .volume-icon { font-size: 16px; color: #888; }
-.volume-slider {
-  flex: 1; -webkit-appearance: none; appearance: none;
-  height: 4px; background: #333; border-radius: 2px; outline: none;
-}
-.volume-slider::-webkit-slider-thumb {
-  -webkit-appearance: none; width: 16px; height: 16px;
-  border-radius: 50%; background: #4ecdc4; cursor: pointer;
-}
+.volume-slider { flex: 1; -webkit-appearance: none; appearance: none; height: 4px; background: #333; border-radius: 2px; outline: none; }
+.volume-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #4ecdc4; cursor: pointer; }
 
-/* === Suche === */
+/* Suche */
 .search-section { flex: 1; display: flex; flex-direction: column; }
-
-.search-bar {
-  display: flex; gap: 8px; margin-bottom: 16px;
-}
-.search-bar input {
-  flex: 1; padding: 12px 14px;
-  border: 1px solid #333; border-radius: 10px;
-  background: #16213e; color: #e0e0e0;
-  font-size: 15px; outline: none;
-}
+.search-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+.search-bar input { flex: 1; padding: 12px 14px; border: 1px solid #333; border-radius: 10px; background: #16213e; color: #e0e0e0; font-size: 15px; outline: none; }
 .search-bar input:focus { border-color: #4ecdc4; }
-
-.search-btn {
-  padding: 0 16px; border: none; border-radius: 10px;
-  background: #4ecdc4; color: #1a1a2e;
-  font-size: 18px; cursor: pointer;
-}
+.search-btn { padding: 0 16px; border: none; border-radius: 10px; background: #4ecdc4; color: #1a1a2e; font-size: 18px; cursor: pointer; }
 .search-btn:disabled { opacity: 0.5; }
-
-.search-loading {
-  display: flex; align-items: center; justify-content: center;
-  gap: 12px; padding: 32px; color: #888;
-}
-.spinner {
-  width: 20px; height: 20px; border: 2px solid #333;
-  border-top-color: #4ecdc4; border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
+.search-loading { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 32px; color: #888; }
+.spinner { width: 20px; height: 20px; border: 2px solid #333; border-top-color: #4ecdc4; border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-
-.search-results {
-  flex: 1; overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-}
-
-.search-item {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 8px; border-radius: 10px;
-  cursor: pointer; transition: background 0.15s;
-}
+.search-results { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.search-item { display: flex; align-items: center; gap: 12px; padding: 10px 8px; border-radius: 10px; cursor: pointer; transition: background 0.15s; }
 .search-item:active { background: rgba(78, 205, 196, 0.1); }
-
-.search-thumb {
-  width: 48px; height: 48px; border-radius: 6px;
-  object-fit: cover; flex-shrink: 0;
-}
-.search-thumb-placeholder {
-  width: 48px; height: 48px; border-radius: 6px;
-  background: #16213e; display: flex;
-  align-items: center; justify-content: center;
-  font-size: 20px; flex-shrink: 0;
-}
-
+.search-thumb { width: 48px; height: 48px; border-radius: 6px; object-fit: cover; flex-shrink: 0; }
+.search-thumb-placeholder { width: 48px; height: 48px; border-radius: 6px; background: #16213e; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
 .search-item-info { flex: 1; min-width: 0; }
-.search-item-title {
-  font-size: 14px; font-weight: 600; color: #fff;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.search-item-artist {
-  font-size: 12px; color: #aaa; margin-top: 2px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
+.search-item-title { font-size: 14px; font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search-item-artist { font-size: 12px; color: #aaa; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.play-btn { flex-shrink: 0; width: 36px; height: 36px; border: none; border-radius: 50%; background: #4ecdc4; color: #1a1a2e; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
 
-.play-btn {
-  flex-shrink: 0; width: 36px; height: 36px;
-  border: none; border-radius: 50%;
-  background: #4ecdc4; color: #1a1a2e;
-  font-size: 14px; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-}
+/* Browse / Bibliothek */
+.browse-section { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.shelves { padding-bottom: 24px; }
+.shelf { margin-bottom: 24px; }
+.shelf-title { font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 12px; padding: 0 4px; }
+.shelf-items { display: flex; gap: 12px; overflow-x: auto; padding: 0 4px 8px; -webkit-overflow-scrolling: touch; scroll-snap-type: x mandatory; }
+.shelf-items::-webkit-scrollbar { height: 0; }
+.shelf-item { flex-shrink: 0; width: 140px; cursor: pointer; scroll-snap-align: start; }
+.shelf-item:active .shelf-item-thumb { opacity: 0.8; }
+.shelf-item-thumb { position: relative; width: 140px; height: 140px; border-radius: 8px; overflow: hidden; background: #16213e; margin-bottom: 8px; }
+.shelf-item-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.shelf-item-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 32px; opacity: 0.3; }
+.shelf-item-play { position: absolute; bottom: 8px; right: 8px; width: 32px; height: 32px; border-radius: 50%; background: #4ecdc4; color: #1a1a2e; display: flex; align-items: center; justify-content: center; font-size: 12px; opacity: 0; transition: opacity 0.2s; }
+.shelf-item:hover .shelf-item-play, .shelf-item:active .shelf-item-play { opacity: 1; }
+.shelf-item-title { font-size: 13px; font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shelf-item-subtitle { font-size: 11px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 </style>

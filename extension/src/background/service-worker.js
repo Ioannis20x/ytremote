@@ -134,6 +134,56 @@ async function handleServerMessage(message) {
   if (message.type === 'REQUEST_STATE') {
     sendStateToServer();
   }
+
+  // Homepage-Daten anfordern (Mein Mix, Empfehlungen, etc.)
+  if (message.type === 'BROWSE') {
+    const tabs = await chrome.tabs.query({ url: 'https://music.youtube.com/*' });
+
+    if (tabs.length === 0) {
+      sendToServer({ type: 'BROWSE_RESULT', shelves: [], error: 'Kein YouTube Music Tab offen' });
+      return;
+    }
+
+    try {
+      const response = await chrome.tabs.sendMessage(tabs[0].id, { type: 'BROWSE' });
+
+      if (response?.needsNavigate) {
+        // Erst zur Homepage navigieren, dann nochmal versuchen
+        await chrome.tabs.update(tabs[0].id, { url: 'https://music.youtube.com/' });
+        // Nach Laden nochmal versuchen
+        setTimeout(async () => {
+          try {
+            const retry = await chrome.tabs.sendMessage(tabs[0].id, { type: 'BROWSE' });
+            sendToServer({ type: 'BROWSE_RESULT', shelves: retry?.shelves || [] });
+          } catch {
+            sendToServer({ type: 'BROWSE_RESULT', shelves: [], error: 'Laden fehlgeschlagen' });
+          }
+        }, 3000);
+      } else {
+        sendToServer({ type: 'BROWSE_RESULT', shelves: response?.shelves || [] });
+      }
+    } catch (err) {
+      console.error('[YTRemote] Browse-Fehler:', err);
+      sendToServer({ type: 'BROWSE_RESULT', shelves: [], error: err.message });
+    }
+  }
+
+  // Queue/Warteschlange anfordern
+  if (message.type === 'GET_QUEUE') {
+    const tabs = await chrome.tabs.query({ url: 'https://music.youtube.com/*' });
+
+    if (tabs.length === 0) {
+      sendToServer({ type: 'QUEUE_RESULT', queue: [] });
+      return;
+    }
+
+    try {
+      const response = await chrome.tabs.sendMessage(tabs[0].id, { type: 'GET_QUEUE' });
+      sendToServer({ type: 'QUEUE_RESULT', queue: response?.queue || [] });
+    } catch {
+      sendToServer({ type: 'QUEUE_RESULT', queue: [] });
+    }
+  }
 }
 
 /**

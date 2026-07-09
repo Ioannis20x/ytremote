@@ -149,6 +149,25 @@ wss.on('connection', (ws) => {
       }
       return;
     }
+
+    // Remote fragt Homepage-Daten oder Queue an → an Extension weiterleiten
+    if ((message.type === 'BROWSE' || message.type === 'GET_QUEUE') && role === 'remote') {
+      if (room.extension && room.extension.readyState === 1) {
+        room.extension.send(JSON.stringify(message));
+      }
+      return;
+    }
+
+    // Extension sendet Browse/Queue-Ergebnisse → an alle Remotes weiterleiten
+    if ((message.type === 'BROWSE_RESULT' || message.type === 'QUEUE_RESULT') && role === 'extension') {
+      const resultMsg = JSON.stringify(message);
+      for (const remote of room.remotes) {
+        if (remote.readyState === 1) {
+          remote.send(resultMsg);
+        }
+      }
+      return;
+    }
   });
 
   ws.on('close', () => {
