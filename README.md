@@ -170,7 +170,7 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a PR.
 If YTRemote saved you from a bad song mid-game, consider:
 
 - ⭐ **Starring the repo** — helps others find it
-- 🐛 **Reporting bugs** — via [GitHub Issues](https://github.com/ioannisdev/ytremote/issues)
+- 🐛 **Reporting bugs** — via [GitHub Issues](https://github.com/ioannis20x/ytremote/issues)
 - ☕ **[Buy me a coffee](https://ko-fi.com/ioannisdev)** — keeps the server running
 
 ## License
@@ -180,5 +180,5 @@ MIT — see [LICENSE](LICENSE) for details.
 ---
 
 <div align="center">
-  Made by <a href="https://github.com/ioannisdev">ioannisdev</a>
+  Made by <a href="https://github.com/ioannis20x">ioannisdev</a>
 </div>
