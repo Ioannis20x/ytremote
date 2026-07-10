@@ -136,6 +136,7 @@ async function handleServerMessage(message) {
   }
 
   // Homepage-Daten anfordern (Mein Mix, Empfehlungen, etc.)
+  // Content Script nutzt InnerTube API – navigiert nicht mehr weg!
   if (message.type === 'BROWSE') {
     const tabs = await chrome.tabs.query({ url: 'https://music.youtube.com/*' });
 
@@ -146,22 +147,7 @@ async function handleServerMessage(message) {
 
     try {
       const response = await chrome.tabs.sendMessage(tabs[0].id, { type: 'BROWSE' });
-
-      if (response?.needsNavigate) {
-        // Erst zur Homepage navigieren, dann nochmal versuchen
-        await chrome.tabs.update(tabs[0].id, { url: 'https://music.youtube.com/' });
-        // Nach Laden nochmal versuchen
-        setTimeout(async () => {
-          try {
-            const retry = await chrome.tabs.sendMessage(tabs[0].id, { type: 'BROWSE' });
-            sendToServer({ type: 'BROWSE_RESULT', shelves: retry?.shelves || [] });
-          } catch {
-            sendToServer({ type: 'BROWSE_RESULT', shelves: [], error: 'Laden fehlgeschlagen' });
-          }
-        }, 3000);
-      } else {
-        sendToServer({ type: 'BROWSE_RESULT', shelves: response?.shelves || [] });
-      }
+      sendToServer({ type: 'BROWSE_RESULT', shelves: response?.shelves || [] });
     } catch (err) {
       console.error('[YTRemote] Browse-Fehler:', err);
       sendToServer({ type: 'BROWSE_RESULT', shelves: [], error: err.message });
@@ -246,6 +232,27 @@ chrome.runtime.onMessage.addListener((message, _sender, _sendResponse) => {
   }
 
   return false;
+});
+
+// === Autoconnect beim Browser-Start ===
+chrome.runtime.onStartup.addListener(() => {
+  console.log('[YTRemote] Browser gestartet – verbinde automatisch...');
+  connectToServer();
+});
+
+// === Keep-Alive: Service Worker alle 20 Sek. aufwecken ===
+// MV3 Service Worker schläft nach Inaktivität ein und verliert WebSocket-Verbindung.
+// Alarm-API hält ihn aktiv und reconnectet falls nötig.
+chrome.alarms.create('ytremote-keepalive', { periodInMinutes: 0.33 }); // ~20 Sekunden
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== 'ytremote-keepalive') return;
+
+  // Verbindung prüfen und bei Bedarf neu aufbauen
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.log('[YTRemote] Keep-Alive: Verbindung verloren, reconnecte...');
+    connectToServer();
+  }
 });
 
 // Beim Start verbinden

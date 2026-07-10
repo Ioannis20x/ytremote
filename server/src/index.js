@@ -6,9 +6,9 @@
 
 import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync, statSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { dirname, join, extname } from 'path';
 import 'dotenv/config';
 
 const PORT = process.env.PORT || 3456;
@@ -25,15 +25,34 @@ function getOrCreateRoom(code) {
   return rooms.get(code);
 }
 
-// === HTTP-Server für Web Remote (statische Dateien) ===
+// === MIME-Types für statische Dateien ===
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.webmanifest': 'application/manifest+json',
+};
+
+// === HTTP-Server: PWA + Health-Check ===
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const webDir = join(__dirname, '..', '..', 'web', 'dist');
+const publicDir = join(__dirname, '..', 'public'); // /app/public im Docker
 
 const httpServer = createServer((req, res) => {
-  // CORS-Header für Entwicklung
   res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // Health-Check Endpoint
+  // CORS Preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  // Health-Check
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -44,7 +63,91 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  // Info-Seite wenn kein Web-Build vorhanden
+  // === Such-Proxy: leitet InnerTube-Anfragen weiter (kein CORS-Problem) ===
+  if (req.url === '/api/search' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const { query, filter } = JSON.parse(body);
+        if (!query) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'query fehlt' }));
+          return;
+        }
+
+        // Filter-Params für InnerTube
+        const FILTER_PARAMS = {
+          songs: 'EgWKAQIIAQ%3D%3D',
+          videos: 'EgWKAQIQAQ%3D%3D',
+          all: null,
+        };
+        const params = FILTER_PARAMS[filter] || FILTER_PARAMS.songs;
+
+        const requestBody = {
+          context: {
+            client: {
+              clientName: 'WEB_REMIX',
+              clientVersion: '1.20241106.01.00',
+              hl: 'de',
+              gl: 'DE',
+            },
+          },
+          query,
+        };
+        if (params) requestBody.params = params;
+
+        const apiResponse = await fetch('https://music.youtube.com/youtubei/v1/search?key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Origin': 'https://music.youtube.com',
+            'Referer': 'https://music.youtube.com/',
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        const data = await apiResponse.json();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data));
+      } catch (err) {
+        console.error('[API] Suchfehler:', err.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Statische Dateien aus public/ ausliefern (PWA)
+  if (existsSync(publicDir)) {
+    // URL bereinigen (Query-String entfernen, Path Traversal verhindern)
+    const urlPath = req.url.split('?')[0];
+    const safePath = urlPath.replace(/\.\./g, '');
+
+    let filePath = join(publicDir, safePath);
+
+    // Wenn Verzeichnis oder Root → index.html (SPA-Routing)
+    if (!extname(filePath) || !existsSync(filePath)) {
+      filePath = join(publicDir, 'index.html');
+    }
+
+    if (existsSync(filePath) && statSync(filePath).isFile()) {
+      const ext = extname(filePath);
+      const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+      try {
+        const content = readFileSync(filePath);
+        res.writeHead(200, { 'Content-Type': contentType });
+        res.end(content);
+        return;
+      } catch {
+        // Fallthrough zur Fallback-Seite
+      }
+    }
+  }
+
+  // Fallback: Info-Seite wenn kein Web-Build vorhanden
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(`
     <!DOCTYPE html>

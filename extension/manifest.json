@@ -3,7 +3,7 @@
   "name": "YTRemote",
   "version": "1.0.0",
   "description": "Remote-control YouTube Music from any device — like Spotify Connect.",
-  "permissions": ["storage", "activeTab"],
+  "permissions": ["storage", "activeTab", "alarms"],
   "host_permissions": ["https://music.youtube.com/*"],
   "background": {
     "service_worker": "src/background/service-worker.js"

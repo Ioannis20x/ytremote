@@ -1,73 +1,107 @@
 /**
  * YTRemote – Popup Script
- * Zeigt Verbindungsstatus und ermöglicht Konfiguration.
  */
 
-const statusDot = document.getElementById('statusDot');
+const statusDot  = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
-const serverUrlInput = document.getElementById('serverUrl');
+const serverUrlInput  = document.getElementById('serverUrl');
 const pairingCodeInput = document.getElementById('pairingCode');
-const connectBtn = document.getElementById('connectBtn');
-const songInfo = document.getElementById('songInfo');
-const songTitle = document.getElementById('songTitle');
-const songArtist = document.getElementById('songArtist');
+const connectBtn  = document.getElementById('connectBtn');
+const nowPlaying  = document.getElementById('nowPlaying');
+const npTitle     = document.getElementById('npTitle');
+const npArtist    = document.getElementById('npArtist');
+const npThumb     = document.getElementById('npThumb');
+const npThumbPh   = document.getElementById('npThumbPlaceholder');
+const npStatus    = document.getElementById('npStatus');
 
-// Gespeicherte Einstellungen laden
+// === Gespeicherte Einstellungen laden ===
 chrome.storage.local.get(['serverUrl', 'pairingCode'], (result) => {
-  if (result.serverUrl) serverUrlInput.value = result.serverUrl;
+  if (result.serverUrl)   serverUrlInput.value  = result.serverUrl;
   if (result.pairingCode) pairingCodeInput.value = result.pairingCode;
 });
 
-// Verbindungsstatus abfragen
+// === Status setzen ===
+function setStatus(state, text) {
+  statusDot.className  = 'status-dot' + (state ? ` ${state}` : '');
+  statusText.className = 'status-text' + (state ? ` ${state}` : '');
+  statusText.textContent = text;
+}
+
+// === Now Playing anzeigen ===
+function showNowPlaying(state) {
+  if (!state?.active) {
+    nowPlaying.style.display = 'none';
+    return;
+  }
+
+  npTitle.textContent  = state.title  || '';
+  npArtist.textContent = state.artist || '';
+
+  if (state.thumbnail) {
+    npThumb.src = state.thumbnail;
+    npThumb.style.display = 'block';
+    npThumbPh.style.display = 'none';
+  } else {
+    npThumb.style.display = 'none';
+    npThumbPh.style.display = 'block';
+  }
+
+  const icon = state.isPlaying
+    ? '<i class="fa-solid fa-volume-high"></i><span>Läuft</span>'
+    : '<i class="fa-solid fa-pause"></i><span>Pausiert</span>';
+  npStatus.innerHTML = icon;
+
+  nowPlaying.style.display = 'flex';
+}
+
+// === Verbindungsstatus abfragen ===
 chrome.runtime.sendMessage({ type: 'GET_CONNECTION_STATUS' }, (response) => {
   if (chrome.runtime.lastError || !response) {
-    statusDot.className = 'status-dot disconnected';
-    statusText.textContent = 'Nicht verbunden';
+    setStatus('error', 'Nicht verbunden');
     return;
   }
 
   if (response.connected) {
-    statusDot.className = 'status-dot connected';
-    statusText.textContent = 'Verbunden';
+    setStatus('connected', 'Verbunden');
+    showNowPlaying(response.state);
   } else {
-    statusDot.className = 'status-dot disconnected';
-    statusText.textContent = 'Nicht verbunden';
-  }
-
-  if (response.state?.active) {
-    songInfo.style.display = 'block';
-    songTitle.textContent = response.state.title || '';
-    songArtist.textContent = response.state.artist || '';
+    setStatus('error', 'Nicht verbunden');
   }
 });
 
-// Verbinden-Button
+// === Verbinden ===
 connectBtn.addEventListener('click', () => {
-  const serverUrl = serverUrlInput.value.trim();
+  const serverUrl   = serverUrlInput.value.trim();
   const pairingCode = pairingCodeInput.value.trim();
 
   if (!serverUrl || !pairingCode) {
-    statusText.textContent = 'Bitte alle Felder ausfüllen';
+    setStatus('error', 'Bitte alle Felder ausfüllen');
     return;
   }
 
-  // Speichern und neu verbinden
+  setStatus(null, 'Verbinde...');
+  connectBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Verbinde...';
+
   chrome.storage.local.set({ serverUrl, pairingCode }, () => {
     chrome.runtime.sendMessage({ type: 'RECONNECT' });
-    statusText.textContent = 'Verbinde...';
-    statusDot.className = 'status-dot';
 
-    // Nach kurzer Pause Status erneut abfragen
     setTimeout(() => {
       chrome.runtime.sendMessage({ type: 'GET_CONNECTION_STATUS' }, (response) => {
+        connectBtn.innerHTML = '<i class="fa-solid fa-link"></i> Verbinden';
         if (response?.connected) {
-          statusDot.className = 'status-dot connected';
-          statusText.textContent = 'Verbunden';
+          setStatus('connected', 'Verbunden');
+          showNowPlaying(response.state);
         } else {
-          statusDot.className = 'status-dot disconnected';
-          statusText.textContent = 'Verbindung fehlgeschlagen';
+          setStatus('error', 'Verbindung fehlgeschlagen');
         }
       });
     }, 2000);
+  });
+});
+
+// Enter-Taste
+[serverUrlInput, pairingCodeInput].forEach(el => {
+  el.addEventListener('keyup', (e) => {
+    if (e.key === 'Enter') connectBtn.click();
   });
 });
